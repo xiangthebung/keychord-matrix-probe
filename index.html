@@ -60,7 +60,8 @@
   <p class="intro">
     Every test is a 3-key combination: two keys held with one hand, plus the highlighted key tapped with the other.
     Tap the highlighted keys once each, in order; the highlight moves by itself. Green (✓): all three registered.
-    Red (✗): blocked, the keyboard dropped it. If a key stays dark, just tap the next one. Later rounds only ask for
+    Red (✗): blocked, the keyboard dropped it. If a key stays dark, just tap the next one. If the round can't
+    finish because every key left is blocked, press Backspace to end it. Later rounds only ask for
     keys whose result isn't known yet, so they get short. Then a few 4-6 key chords confirm the map. About 10 minutes
     in all; progress is saved in this browser as you go. Use the US input source (any US layout works: only the key
     position matters).
@@ -665,6 +666,10 @@ class MatrixScanSession {
     return u > 0 && u <= MatrixScanSession.skipWindow && this.finishKey !== null;
   }
   get sweepComplete() { return this.order.length > 0 && this.unresolved.length === 0; }
+  /** The round can't end on its own: every remaining key is dark and none registered to tap again. */
+  get stuckOnDark() {
+    return this.phase === "tapping" && this.downIs(this.pair) && this.unresolved.length > 0 && this.finishKey === null;
+  }
   get tripleTests() { return this.model.sweeps.reduce((t, s) => t + (s.tapped ? s.tapped.size : N - 2), 0); }
 
   downIs(p) { return this.down.size === 2 && this.down.has(p.a) && this.down.has(p.b); }
@@ -878,6 +883,15 @@ class MatrixScanSession {
       this.status.set(code, "registered");
       this.message = "";
     }
+  }
+
+  /** End the round while the pair is held: every key still dark is blocked. Used when nothing is left to tap
+   *  (for example the round ends on Space and the pair blocks it, so there is no key that would register). */
+  forceFinish() {
+    if (this.stage !== "sweeps" || !this.pair || this.phase !== "tapping" || !this.downIs(this.pair)) return;
+    if (this.unresolved.length === 0) return;
+    for (const k of this.unresolved) this.status.set(k, "missed");
+    this.released(this.pair);
   }
 
   keyUp(code) {
@@ -1325,8 +1339,11 @@ const Report = {
       const next = s.unresolved.slice(1, 4).map(label);
       detail = `${left} left this round.` + (next.length ? " Next: " + next.join(", ") + "." : "")
         + " If it stays dark, it's blocked: tap the next one.";
-      if (!s.endsOnKnownKey && s.canFinishWithKey && s.finishKey !== null) {
-        detail += ` If the last ones stay dark, tap ${label(s.finishKey)} again to finish.`;
+      if (s.finishKey === null) {
+        // No key has registered yet, so there is nothing to tap again to finish: Backspace ends the round.
+        detail += " If none of them register, press Backspace to end the round (they count as blocked).";
+      } else if (!s.endsOnKnownKey && s.canFinishWithKey) {
+        detail += ` If the last ones stay dark, tap ${label(s.finishKey)} again to finish, or press Backspace.`;
       }
     } else {
       instruction = `Round done. Let go of ${pairText}.`;
@@ -1358,6 +1375,18 @@ const Report = {
       isoKeySeen = true;
       session.message = "That key (left of Z or left of 1) only exists on ISO keyboards. This probe is for US ANSI keyboards.";
       refresh();
+      return;
+    }
+    // Backspace ends a stuck round: when the keys left are all dark and none registered (for example the
+    // round ends on Space and the pair blocks it), there is nothing to tap, so this records them as blocked.
+    if (e.code === "Backspace") {
+      e.preventDefault();
+      if (e.type === "keydown" && !e.repeat) {
+        const before = session.sweeps.length;
+        session.forceFinish();
+        if (session.sweeps.length !== before) autosave();
+        refresh();
+      }
       return;
     }
     const k = INDEX_BY_DOM_CODE.get(e.code);
